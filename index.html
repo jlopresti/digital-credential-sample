@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Digital Credentials API Demo</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            background-color: #f4f4f4;
+            color: #333;
+        }
+        .container {
+            background-color: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            max-width: 600px;
+            margin: 50px auto;
+            text-align: center;
+        }
+        h1 {
+            color: #0056b3;
+            margin-bottom: 20px;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 12px 25px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s ease;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #statusMessage {
+            margin-top: 25px;
+            padding: 15px;
+            border-radius: 5px;
+            min-height: 50px;
+            text-align: left;
+            font-family: monospace;
+            white-space: pre-wrap; /* Preserve whitespace and line breaks */
+            word-wrap: break-word;  /* Break long words */
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        .info {
+            background-color: #e2e3e5;
+            color: #383d41;
+            border: 1px solid #d6d8db;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Digital Credentials API Demo</h1>
+        <p>Click the button below to request a digital credential.</p>
+        <button id="requestButton">Request Digital Credential</button>
+        <div id="statusMessage" class="info">Ready to request...</div>
+    </div>
+
+    <script>
+        const requestButton = document.getElementById('requestButton');
+        const statusMessageDiv = document.getElementById('statusMessage');
+
+        function updateStatus(message, type = 'info') {
+            statusMessageDiv.textContent = message;
+            statusMessageDiv.className = `info ${type}`; // Reset and apply new type
+        }
+
+        async function requestDigitalCredential() {
+            updateStatus('Attempting to request digital credential...', 'info');
+            requestButton.disabled = true; // Disable button during request
+
+            try {
+                // Ensure navigator.credentials and navigator.credentials.get are available
+                if (!navigator.credentials || typeof navigator.credentials.get !== 'function') {
+                    updateStatus('Error: Digital Credentials API not supported in this browser/environment. Try Chrome on Android.', 'error');
+                    return;
+                }
+
+                // This is the core API call
+                const credential = await navigator.credentials.get({
+                    digital: {
+                        providers: [{
+                            protocol: "openid4vp",
+                            request: {
+                                // IMPORTANT: This `request` object must conform to OpenID4VP
+                                // presentation definition requirements.
+                                // The example below requests an "age_over_18" attestation.
+                                // Adjust this based on your demo wallet's supported credentials.
+                                "type": "openid4vp",
+                                "presentation_definition": {
+                                    "id": "proof_of_age_over_18",
+                                    "input_descriptors": [{
+                                        "id": "age_attestation",
+                                        "constraints": {
+                                            "fields": [{
+                                                "path": ["$.age"], // Example: path to age claim
+                                                "filter": {
+                                                    "type": "number",
+                                                    "minimum": 18
+                                                }
+                                            }]
+                                        },
+                                        "format": {
+                                            "jwt_vc_json": {
+                                                "alg": ["ES256"] // Or other algorithms supported by your VC
+                                            },
+                                            "jwt_vc_json-ld": {
+                                                "alg": ["ES256"]
+                                            }
+                                        }
+                                    }]
+                                }
+                                // You might also include other OpenID4VP parameters like `client_id`, `nonce`, etc.,
+                                // if your specific flow requires them.
+                            }
+                        }]
+                    }
+                });
+
+                if (credential && credential.type === 'digital') {
+                    const digitalCredentialResponse = credential.data; // This will contain the vp_token for OpenID4VP
+                    updateStatus(`Digital Credential Response received. Sending to backend for verification...\n${JSON.stringify(digitalCredentialResponse, null, 2)}`, 'info');
+
+                    // Send this response to your C# backend for verification
+                    try {
+                        const backendResponse = await fetch('http://localhost:5000/api/DigitalCredential/verify-credential', { // <-- REPLACE WITH YOUR C# BACKEND URL
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json',
+                                // If your backend requires authentication headers, add them here
+                            },
+                            body: JSON.stringify(digitalCredentialResponse),
+                        });
+
+                        const responseData = await backendResponse.json();
+
+                        if (backendResponse.ok) {
+                            updateStatus(`Backend Verification Successful!\n${JSON.stringify(responseData, null, 2)}`, 'success');
+                        } else {
+                            updateStatus(`Backend Verification Failed: ${backendResponse.status} ${backendResponse.statusText}\n${JSON.stringify(responseData, null, 2)}`, 'error');
+                        }
+                    } catch (fetchError) {
+                        updateStatus(`Error communicating with backend: ${fetchError.message}\nCheck CORS settings and backend URL.`, 'error');
+                        console.error('Fetch error:', fetchError);
+                    }
+
+                } else {
+                    updateStatus('No digital credential received or unexpected credential type.', 'error');
+                }
+
+            } catch (error) {
+                // This catches user cancellation, API not supported, or other browser-level errors
+                if (error.name === 'NotAllowedError') {
+                    updateStatus('Credential request denied by user or policy.', 'error');
+                } else if (error.name === 'SecurityError') {
+                    updateStatus('Security error during credential request. Ensure secure context (HTTPS) if applicable.', 'error');
+                } else {
+                    updateStatus(`An error occurred: ${error.message || error.name || error}`, 'error');
+                }
+                console.error("Error requesting digital credential:", error);
+            } finally {
+                requestButton.disabled = false; // Re-enable button
+            }
+        }
+
+        // Attach the event listener
+        requestButton.addEventListener('click', requestDigitalCredential);
+
+        // Initial check for API support
+        if (!navigator.credentials || typeof navigator.credentials.get !== 'function') {
+            updateStatus('Digital Credentials API is not supported in this browser. Please use Chrome on an Android device with a compatible wallet.', 'error');
+            requestButton.disabled = true;
+        } else {
+            // Optional: You could pre-check for 'digital' support, but the primary error will
+            // likely come from the .get() call itself if not supported.
+            // Some browsers might expose `navigator.credentials.get({ digital: true })` but not actually support the full flow.
+        }
+
+    </script>
+</body>
+</html>
